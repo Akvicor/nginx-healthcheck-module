@@ -1,5 +1,7 @@
 # nginx-healthcheck-module
 
+[博客链接](https://www.ksyaki.com/archives/nginx-shang-you-jian-kang-jian-cha-cha-jian)
+
 用于 Nginx 1.26+ 的主动 upstream 健康检查模块。
 
 本项目由 Akvicor 维护，修改自

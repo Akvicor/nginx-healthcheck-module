@@ -2,6 +2,8 @@
 
 [中文文档](README-zh_CN.md)
 
+[Blog](https://www.ksyaki.com/archives/nginx-shang-you-jian-kang-jian-cha-cha-jian)
+
 Active upstream health checks for Nginx 1.26+.
 
 This project is maintained by Akvicor and is based on
