@@ -1,5 +1,7 @@
 # nginx-healthcheck-module
 
+[中文文档](README-zh_CN.md)
+
 Active upstream health checks for Nginx 1.26+.
 
 This project is maintained by Akvicor and is based on
