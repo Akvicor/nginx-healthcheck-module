@@ -4,6 +4,7 @@
 #include <nginx.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include "ngx_healthcheck_common.h"
 
 typedef struct ngx_upstream_check_peer_s ngx_upstream_check_peer_t;
 typedef struct ngx_upstream_check_srv_conf_s ngx_upstream_check_srv_conf_t;
@@ -35,7 +36,6 @@ typedef struct {
     ngx_upstream_check_packet_parse_pt  parse;
     ngx_upstream_check_packet_clean_pt  reinit;
 
-    unsigned need_pool;
     unsigned need_keepalive;
 } ngx_check_conf_t;
 
@@ -81,15 +81,23 @@ typedef struct {
     ngx_msec_t                               avg_check_delay;     // 平均延迟(毫秒)
     ngx_msec_t                               max_check_delay;     // 最大延迟(毫秒)
     ngx_msec_t                               min_check_delay;     // 最小延迟(毫秒)
-    ngx_uint_t                               delay_sample_count;  // 延迟采样次数
+    uint64_t                                 delay_total;
+    uint64_t                                 delay_sample_count;  // 延迟采样次数
 
-    ngx_str_t                               *upstream_name;
+    ngx_str_t                                upstream_name;
+    struct sockaddr                         *check_sockaddr;
+    socklen_t                                check_socklen;
+    ngx_uint_t                               check_type;
     u_char                                   padding[64];
 } ngx_upstream_check_peer_shm_t;
 
+#define NGX_HEALTHCHECK_SHM_MAGIC            0x48434b31U
+#define NGX_HEALTHCHECK_SHM_VERSION          1
+
 typedef struct {
+    uint32_t                                 magic;
+    uint32_t                                 version;
     ngx_uint_t                               generation;// current process generation(==reload_num +1)
-    ngx_uint_t                               checksum;// we can know if peer config file changed by calculate it.
     ngx_uint_t                               number;
 
     /* ngx_upstream_check_status_peer_t */
@@ -102,7 +110,6 @@ typedef struct {
 
 struct ngx_upstream_check_peer_s {
     ngx_flag_t                               state;
-    ngx_pool_t                              *pool;
     ngx_uint_t                               index;
     ngx_uint_t                               max_busy;
     ngx_str_t                               *upstream_name;
@@ -129,8 +136,24 @@ struct ngx_upstream_check_peer_s {
 
 typedef struct {
     ngx_str_t                                check_shm_name;
-    ngx_uint_t                               checksum;
     /* peers include ngx_upstream_check_peer_t item*/
     ngx_array_t                              peers;
     ngx_upstream_check_peers_shm_t     *peers_shm;
 } ngx_upstream_check_peers_t;
+
+typedef struct ngx_healthcheck_identity_index_s ngx_healthcheck_identity_index_t;
+
+/* 从旧共享状态建立完整 peer 身份索引，匹配结果按一对一方式消费。 */
+ngx_healthcheck_identity_index_t *ngx_healthcheck_identity_index_create(
+    ngx_pool_t *pool, ngx_upstream_check_peers_shm_t *peers_shm);
+ngx_upstream_check_peer_shm_t *ngx_healthcheck_identity_index_take(
+    ngx_healthcheck_identity_index_t *index, ngx_upstream_check_peer_t *peer);
+
+/* 在旧 cycle 中扫描并返回同模块最近一次有效的共享状态。 */
+ngx_upstream_check_peers_shm_t *ngx_healthcheck_find_latest_peers_shm(
+    ngx_cycle_t *cycle, void *tag);
+
+/* 将当前配置中的完整 peer 身份复制到当前共享 slab。 */
+ngx_int_t ngx_healthcheck_copy_shm_identity(ngx_slab_pool_t *shpool,
+    ngx_upstream_check_peer_shm_t *peer_shm,
+    ngx_upstream_check_peer_t *peer);

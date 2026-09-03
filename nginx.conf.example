@@ -8,8 +8,6 @@ events {
 }
 
 http {
-    check_shm_size 2m;
-
     log_format main '$remote_addr:$remote_port -> $server_addr:$server_port '
                     '[$time_local] "$request" $status $body_bytes_sent';
     access_log logs/access.log main;
@@ -19,10 +17,6 @@ http {
 
         location /status {
             healthcheck_status json;
-        }
-
-        location /metrics {
-            healthcheck_status prometheus;
         }
 
         location / {
@@ -47,14 +41,11 @@ http {
 }
 
 stream {
-    check_shm_size 2m;
-
     upstream tcp-cluster {
         server 127.0.0.1:22;
         server 192.168.0.2:22;
 
-        check interval=3000 rise=2 fall=5 timeout=5000 default_down=true type=tcp reuse=on;
-        check_keepalive_requests 10;
+        check interval=3000 rise=2 fall=5 timeout=5000 default_down=true type=tcp;
     }
 
     server {
@@ -63,8 +54,8 @@ stream {
     }
 
     upstream udp-cluster {
-        server 127.0.0.1:53;
-        server 8.8.8.8:53;
+        server 127.0.0.1:5432;
+        server 8.8.8.8:5432;
 
         check interval=3000 rise=2 fall=5 timeout=5000 default_down=true type=udp;
     }
