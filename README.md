@@ -39,6 +39,9 @@ ip_hash where applicable, and least_conn.
 
 ## Installation
 
+To install prebuilt packages from the Debian repository, see the
+[installation guide on the blog](https://www.ksyaki.com/archives/nginx-shang-you-jian-kang-jian-cha-cha-jian).
+
 ```bash
 git clone https://github.com/nginx/nginx.git
 git clone https://github.com/Akvicor/nginx-healthcheck-module.git

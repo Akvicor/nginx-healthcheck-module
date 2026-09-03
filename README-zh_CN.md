@@ -1,5 +1,7 @@
 # nginx-healthcheck-module
 
+[English documentation](README.md)
+
 [博客链接](https://www.ksyaki.com/archives/nginx-shang-you-jian-kang-jian-cha-cha-jian)
 
 用于 Nginx 1.26+ 的主动 upstream 健康检查模块。
@@ -32,6 +34,9 @@
 包括 round robin、hash、consistent hash、适用场景下的 ip_hash，以及 least_conn。
 
 ## 安装
+
+如果希望通过 Debian 软件源安装预编译的软件包，请参阅
+[博客中的安装指南](https://www.ksyaki.com/archives/nginx-shang-you-jian-kang-jian-cha-cha-jian)。
 
 ```bash
 git clone https://github.com/nginx/nginx.git
