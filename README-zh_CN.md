@@ -1,7 +1,5 @@
 # nginx-healthcheck-module
 
-[English documentation](README.md)
-
 [博客链接](https://www.ksyaki.com/archives/nginx-shang-you-jian-kang-jian-cha-cha-jian)
 
 用于 Nginx 1.26+ 的主动 upstream 健康检查模块。
@@ -18,7 +16,7 @@
 - 支持 `http` upstream 和 `stream` upstream。
 - 可在 Nginx upstream 负载均衡过程中跳过不健康后端。
 - 状态接口支持 `html`、`csv`、`json`、`prometheus` 输出。
-- 状态输出中包含检查延迟统计：最后一次、平均、最小、最大延迟，单位毫秒。
+- 状态输出包含 TCP 检查的最后一次、平均、最小、最大延迟，单位毫秒；UDP 对应字段为数字 0。
 - 支持 TCP 健康检查连接复用：`reuse=on`。
 
 原项目中的 HTTP、FastCGI、MySQL、AJP、SSL hello 等七层检查，在当前维护版本中不再支持。
@@ -31,7 +29,9 @@
 - `stream` 健康检查要求 Nginx 编译时启用 `--with-stream`。
 
 仓库内补丁会为 Nginx 内置 HTTP 和 Stream upstream 负载均衡器添加主动健康检查过滤，
-包括 round robin、hash、consistent hash、适用场景下的 ip_hash，以及 least_conn。
+包括 round robin、hash、consistent hash、HTTP ip_hash、least_conn、random 和 random two。
+[nginx-upstream-fair](https://github.com/Akvicor/nginx-upstream-fair) 通过共同静态构建接入检查，
+支持主组优先、备用组后备，两组节点都持续探测。
 
 ## 安装
 
@@ -129,14 +129,17 @@ check interval=milliseconds [fall=count] [rise=count] [timeout=milliseconds]
 参数省略时默认值：
 `interval=30000 fall=5 rise=2 timeout=1000 default_down=true type=tcp reuse=off`
 
+选择 `type=udp` 且省略 `default_down` 时，默认值为 `false`；显式设置优先，
+与 `type`、`default_down` 的参数顺序无关。
+
 上下文：`http/upstream`、`stream/upstream`
 
 参数说明：
 
-- `interval`：健康检查间隔，单位毫秒。
+- `interval`：上次结果实际提交至下一轮启动的最小间隔，单位毫秒，允许 `1`。
 - `fall`：连续失败达到该次数后，后端被标记为 down。
 - `rise`：连续成功达到该次数后，后端被标记为 up。
-- `timeout`：单次健康检查超时时间，单位毫秒。
+- `timeout`：单次健康检查超时时间，单位毫秒；UDP 的准备、发送和接收共用整轮固定预算。
 - `default_down`：初始后端状态。`true` 表示后端初始为 down，直到连续成功次数达标。
 - `type`：检查协议，只支持 `tcp` 或 `udp`。
 - `port`：可选检查端口。省略时使用 upstream server 的端口。
@@ -144,8 +147,15 @@ check interval=milliseconds [fall=count] [rise=count] [timeout=milliseconds]
   开启复用后，新连接上的第一次检查会真正向上游发起 TCP connect；后续复用同一连接的检查
   会通过 socket peek 验证内核维护的连接状态，而不是每次都重新建立一条到上游的连接。
 
-TCP 检查会连接到后端并尝试 peek 一个字节。UDP 检查会发送一段默认数据，并通过接收路径检测
-ICMP 错误。
+TCP 检查会连接到后端并尝试 peek 一个字节。UDP 每轮使用独立 connected socket，
+向实际检查地址发送固定负载 `NGX_UDP_CHECKER`；实际发送失败、接收失败或成功读取的
+`SO_ERROR` 值用于识别错误。只有已尝试发送、仍有效且尚未截止的轮次观察到
+`ECONNREFUSED` 才计失败；空数据报、普通回复、无确认失败的静默截止和本机资源异常
+等终结结果计成功。这里的成功表示“本轮未确认失败”，不能证明应用服务健康。
+`EAGAIN`/`EINTR` 在原截止内等待或有界重试，发送成功后每轮只发送一个数据报。
+
+失败使 fall 递增并清零 rise，成功使 rise 递增并清零 fall，达到相应阈值才转换状态。
+普通 socket 错误反馈受内核和网络条件影响；端口复用后迟到错误的网络关联能力有限。
 
 ### check_keepalive_requests
 
@@ -207,6 +217,11 @@ HTML、CSV、JSON 输出包含每个后端的延迟统计：
 
 Prometheus 输出当前包含总数/up/down/generation 指标，以及每个后端的 rise、fall、active 指标。
 
+UDP 的延迟字段始终为数字 `0`，表示不适用；消费方可根据 `type` 区分。
+请求先逐 peer 读取一次完整已发布状态并固定筛选结果，再生成输出；JSON 的 `total`
+等于实际输出数组长度。各 peer 的采样时刻可以不同，读取或分配失败返回 HTTP 500。
+静态 `server down`、主动健康状态和被动失败冷却分别生效；状态页的 up 仅代表主动状态。
+
 ### check_status
 
 ```nginx
@@ -227,7 +242,7 @@ JSON 输出结构如下：
 ```json
 {
   "servers": {
-    "total": 2,
+    "total": 1,
     "generation": 1,
     "http": [
       {
@@ -266,18 +281,56 @@ location /metrics/upstream {
 
 ## 运行说明
 
-- `reuse=off` 时，每个 worker 保持原有健康检查定时器行为，每次 TCP 检查结束后关闭连接。
-- `type=tcp reuse=on` 时，peer 按 `peer_index % worker_processes` 分配；每个被检查的
-  peer 由一个 worker 负责健康检查，从而使复用健康检查连接数接近 peer 数，而不是
-  `peer 数 * worker_processes`。
+- HTTP/Stream 分别在自己的 peer 索引空间内，将 TCP reuse on/off 和 UDP
+  统一按 `peer_index % worker_processes` 初始分片；有效 worker 共享健康结果，
+  单进程负责全部 peer，缓存 manager/loader 等 helper 通过原生角色判断排除。
+- 首轮在 `[0,max(interval,1000ms))` 错峰，后续周期唤醒最小为 1ms。
+  实际时刻受事件循环和 `timer_resolution` 影响，`interval=1` 不承诺精确 1ms 探测。
+- 每 worker、每个有检查节点的模块设置一条备用巡检 timer；每批最多 256 条或
+  1ms 预算，按阶段进度期限加 `max(1000ms,2×timer_resolution)` 宽限判断停顿。
+  近期活跃的备用按稳定评分优选，有限窗口后开放兜底竞争。接管者跨轮持续负责，
+  原执行者恢复后清理失效资源；成功 reload 在新配置中重新分片。
+- 每个 peer 只有一个有效结果发布者；暂停进程可能暂时保留旧 socket，恢复后按
+  配置、实例、任期和轮次身份隔离。单 worker 或全部 worker 停顿时无法保证接管。
+- `reuse=off` 每轮新建并关闭 TCP 检查连接；`reuse=on` 按次数上限和连接状态保留。
+  正常稳定期周期 timer 总量约为 peer 数，另计在途 timeout 和巡检；小探测上下文
+  按首次实际负责时分配并在配置内复用，最坏内存边界仍为 peer 数 × worker 数。
 - TCP 复用会改变重复检查所验证的内容。新 TCP 连接上的第一次检查会验证 Nginx 是否能连接到
   上游；复用检查会在已保存的 socket 上调用 `recv(..., MSG_PEEK)`，如果 socket 仍可读或返回
   `EAGAIN`，则认为该 peer 健康。这确认的是现有内核连接尚未观察到关闭或 socket 错误，
   但不会在每个检查周期都新建连接。
 - 健康检查 TCP 复用与普通 upstream keepalive 相互独立。
-- UDP 检查保持当前语义：超时但未收到 ICMP 错误时按成功处理。
-- 当前维护版本不要配置 `type=http`、`type=fastcgi`、`type=mysql`、`type=ajp`、
-  `type=ssl_hello`、`check_http_*` 或 `check_fastcgi_*` 指令。
+- TCP idle 阶段保留读监听；FIN、RST、socket 错误、服务端数据或回收通知关闭连接，
+  下一轮重连，idle 清理本身不计失败。select/poll 的多余写关注在进入 idle 时撤销。
+- UDP 静默原因随有效提交的 debug 结果明细记录；HTTP 状态转换为 ERR，Stream 为 NOTICE。
+  日志级别及 `--with-debug` 仅影响诊断，探测、计数、清理和业务过滤始终执行。
+
+## 配置重载与进程生命周期
+
+模块使用 Nginx 原生的配置、共享内存和进程回调。默认 `master_process on`
+模式下，配置加载失败时，旧配置和原有 worker 继续工作；加载成功后，新 worker
+使用新配置，旧 worker 按 Nginx 原生优雅退出规则完成已有请求和连接。
+
+健康检查数据归属于相应配置。原生 `init_module` 回调在 Nginx 释放旧共享区之前，
+清理本进程旧检查资源；原生 `init_process` 回调绑定有效 worker/单进程配置并启动
+检查；`exit_process` 在进程退出时完成检查资源清理。
+
+正常 reload 按模块、upstream 名、业务地址、实际检查地址和类型一对一匹配旧状态，
+继承完整健康值及 TCP 延迟，重建运行资格。旧快照在单 peer 1ms 预算内不可读时，
+该 peer 使用新配置的 `default_down` 和零计数；真实配置或共享内存初始化错误仍拒绝加载。
+探测 timer 可取消，退出清理幂等，已发布健康值继续供旧业务排空期读取。
+
+### 单进程兼容性
+
+`master_process off` 用于开发调试。已测试的 Nginx 1.26.3 核心在该模式成功 reload
+后不会再次执行进程初始化，未编入 healthcheck 的对照构建也会失去正常 HTTP 服务。
+模块在配置提交时释放旧检查资源，新检查由 Nginx 的进程初始化驱动。运行环境的
+reload 使用正常 master/worker 模式；默认 master 配置下的 `worker_processes 1`
+同样使用这一正常生命周期。
+
+## 开发验收
+
+针对目标 Nginx 源码完成构建后，使用 `nginx -t` 和实际 upstream 流量检查配置。
 
 ## 致谢与许可
 

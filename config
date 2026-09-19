@@ -5,12 +5,29 @@ ngx_feature_path="$ngx_addon_dir"
 ngx_feature_deps="$ngx_addon_dir/ngx_http_upstream_check_module.h \
                   $ngx_addon_dir/ngx_stream_upstream_check_module.h \
                   $ngx_addon_dir/ngx_healthcheck_common.h \
-                  $ngx_addon_dir/ngx_healthcheck_status_writer.h "
+                  $ngx_addon_dir/ngx_healthcheck_status_writer.h \
+                  $ngx_addon_dir/common.h.in \
+                  $ngx_addon_dir/configuration/ngx_healthcheck_config.h \
+                  $ngx_addon_dir/runtime/ngx_healthcheck_state.h \
+                  $ngx_addon_dir/runtime/ngx_healthcheck_runtime.h \
+                  $ngx_addon_dir/protocol/ngx_healthcheck_probe.h \
+                  $ngx_addon_dir/status/ngx_healthcheck_snapshot.h \
+                  $ngx_addon_dir/status/ngx_healthcheck_request.h "
 ngx_feature_src="$ngx_addon_dir/ngx_http_upstream_check_module.c \
                  $ngx_addon_dir/ngx_stream_upstream_check_module.c \
                  $ngx_addon_dir/ngx_healthcheck_common.c \
                  $ngx_addon_dir/ngx_healthcheck_status_writer.c \
-                 $ngx_addon_dir/ngx_healthcheck_status.c "
+                 $ngx_addon_dir/ngx_healthcheck_status.c \
+                 $ngx_addon_dir/configuration/ngx_healthcheck_config.c \
+                 $ngx_addon_dir/runtime/ngx_healthcheck_state.c \
+                 $ngx_addon_dir/runtime/ngx_healthcheck_zone.c \
+                 $ngx_addon_dir/runtime/ngx_healthcheck_schedule.c \
+                 $ngx_addon_dir/protocol/ngx_healthcheck_probe.c \
+                 $ngx_addon_dir/protocol/ngx_healthcheck_tcp.c \
+                 $ngx_addon_dir/protocol/ngx_healthcheck_udp.c \
+                 $ngx_addon_dir/status/ngx_healthcheck_snapshot.c \
+                 $ngx_addon_dir/status/ngx_healthcheck_request.c \
+                 $ngx_addon_dir/status/ngx_healthcheck_legacy.c "
 
 
 have=NGX_STREAM_UPSTREAM_CHECK . auto/have

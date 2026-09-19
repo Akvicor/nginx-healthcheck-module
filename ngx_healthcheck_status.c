@@ -11,20 +11,17 @@
 
 #include "common.h.in"
 #include "ngx_healthcheck_status_writer.h"
+#include "status/ngx_healthcheck_request.h"
 
 
 #define NGX_CHECK_STATUS_DOWN                0x0001
 #define NGX_CHECK_STATUS_UP                  0x0002
 
-typedef ngx_int_t (*ngx_upstream_check_status_format_pt) (
-                                                     ngx_healthcheck_status_writer_t *writer,
-                                                     ngx_upstream_check_peers_t *peers,
-                                                     ngx_uint_t flag);
 typedef struct {
     ngx_str_t                                format;
     ngx_str_t                                content_type;
 
-    ngx_upstream_check_status_format_pt output;
+    ngx_healthcheck_status_output_pt output;
 } ngx_check_status_conf_t;
 
 typedef struct {
@@ -54,7 +51,6 @@ typedef struct {
 
 
 // external var declare
-  extern ngx_uint_t ngx_stream_upstream_check_shm_generation ; //reload counter
   extern ngx_upstream_check_peers_t *stream_peers_ctx ;  //stream peers data
   extern ngx_upstream_check_peers_t *http_peers_ctx ; // http peers data
 
@@ -72,16 +68,16 @@ static ngx_int_t ngx_upstream_check_status_command_status(
 
 static ngx_int_t ngx_upstream_check_status_html_format(
     ngx_healthcheck_status_writer_t *writer,
-    ngx_upstream_check_peers_t *peers, ngx_uint_t flag);
+    ngx_healthcheck_snapshot_t *snapshots, ngx_uint_t flag);
 static ngx_int_t ngx_upstream_check_status_csv_format(
     ngx_healthcheck_status_writer_t *writer,
-    ngx_upstream_check_peers_t *peers, ngx_uint_t flag);
+    ngx_healthcheck_snapshot_t *snapshots, ngx_uint_t flag);
 static ngx_int_t ngx_upstream_check_status_json_format(
     ngx_healthcheck_status_writer_t *writer,
-    ngx_upstream_check_peers_t *peers, ngx_uint_t flag);
+    ngx_healthcheck_snapshot_t *snapshots, ngx_uint_t flag);
 static ngx_int_t ngx_http_upstream_check_status_prometheus_format(
     ngx_healthcheck_status_writer_t *writer,
-    ngx_upstream_check_peers_t *peers, ngx_uint_t flag);
+    ngx_healthcheck_snapshot_t *snapshots, ngx_uint_t flag);
 
 static ngx_check_status_conf_t *ngx_http_get_check_status_format_conf(
     ngx_str_t *str);
@@ -232,7 +228,7 @@ ngx_upstream_check_status_handler(ngx_http_request_t *r)
     ngx_upstream_check_peers_t       *peers;
     ngx_upstream_check_loc_conf_t    *uclcf;
     ngx_upstream_check_status_ctx_t  *ctx;
-    ngx_healthcheck_status_writer_t   writer;
+    ngx_upstream_check_peers_t       *sources[2];
 
     if (r->method != NGX_HTTP_GET && r->method != NGX_HTTP_HEAD) {
         return NGX_HTTP_NOT_ALLOWED;
@@ -267,17 +263,10 @@ ngx_upstream_check_status_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 */
-    ngx_healthcheck_status_writer_init(&writer, r->pool);
-
-    if (ctx->format->output(&writer, peers, ctx->flag) != NGX_OK) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "[ngx-healthcheck][status-interface] response length: %uz, "
-                   "blocks: %ui", writer.length, writer.blocks);
-
-    return ngx_healthcheck_status_writer_send(r, &writer);
+    sources[0] = peers;
+    sources[1] = stream_peers_ctx;
+    return ngx_healthcheck_status_request(r, sources, 2, ctx->flag,
+                                         ctx->format->output, ctx->flag);
 }
 
 static void
@@ -353,35 +342,18 @@ ngx_upstream_check_status_command_status(
 
 static ngx_int_t
 ngx_upstream_check_status_html_format(ngx_healthcheck_status_writer_t *writer,
-    ngx_upstream_check_peers_t *peers, ngx_uint_t flag)
+    ngx_healthcheck_snapshot_t *snapshots, ngx_uint_t flag)
 {
     ngx_uint_t i,stream_count,http_count,stream_up_count,http_up_count;
-    ngx_upstream_check_peer_t *peer;
+    ngx_healthcheck_snapshot_peer_t *peer;
+    ngx_healthcheck_snapshot_t      *peers;
 
-    stream_count = 0;
-    http_count = 0;
-    stream_up_count = 0;
-    http_up_count = 0;
-
-    peers = stream_peers_ctx;
-    if(peers != NULL){
-        peer = peers->peers.elts;
-        for (i = 0; i < peers->peers.nelts; i++) {
-            if (!peer[i].shm->down) {
-                   stream_up_count ++;
-            }
-            stream_count++;
-        }
-    }
-
-    peers = http_peers_ctx; //http
-    peer = peers->peers.elts; 
-    for (i = 0; i < peers->peers.nelts; i++) {
-        if (!peer[i].shm->down) {
-               http_up_count ++;
-        }
-        http_count++;
-    }
+    stream_count = snapshots[1].total;
+    http_count = snapshots[0].total;
+    stream_up_count = snapshots[1].up;
+    http_up_count = snapshots[0].up;
+    peers = &snapshots[0];
+    peer = peers->peers.elts;
 
     if (ngx_healthcheck_status_writer_printf(writer,
             "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\n"
@@ -418,11 +390,11 @@ ngx_upstream_check_status_html_format(ngx_healthcheck_status_writer_t *writer,
 
     for (i = 0; i < peers->peers.nelts; i++) {
         if (flag & NGX_CHECK_STATUS_DOWN) {
-            if (!peer[i].shm->down) {
+            if (!peer[i].health.down) {
                 continue;
             }
         } else if (flag & NGX_CHECK_STATUS_UP) {
-            if (peer[i].shm->down) {
+            if (peer[i].health.down) {
                 continue;
             }
         }
@@ -442,19 +414,19 @@ ngx_upstream_check_status_html_format(ngx_healthcheck_status_writer_t *writer,
                 "    <td>%M</td>\n"
                 "    <td>%M</td>\n"
                 "  </tr>\n",
-                peer[i].shm->down ? " bgcolor=\"#FF0000\"" : "",
-                i,
+                peer[i].health.down ? " bgcolor=\"#FF0000\"" : "",
+                peer[i].index,
                 peer[i].upstream_name,
                 &peer[i].peer_addr->name,
-                peer[i].shm->down ? "down" : "up",
-                peer[i].shm->rise_count,
-                peer[i].shm->fall_count,
+                peer[i].health.down ? "down" : "up",
+                peer[i].health.rise_count,
+                peer[i].health.fall_count,
                 &peer[i].conf->check_type_conf->name,
                 peer[i].conf->port,
-                peer[i].shm->last_check_delay,
-                peer[i].shm->avg_check_delay,
-                peer[i].shm->min_check_delay,
-                peer[i].shm->max_check_delay) != NGX_OK) return NGX_ERROR;
+                peer[i].health.last_check_delay,
+                peer[i].health.avg_check_delay,
+                peer[i].health.min_check_delay,
+                peer[i].health.max_check_delay) != NGX_OK) return NGX_ERROR;
     }
 
     if (ngx_healthcheck_status_writer_printf(writer, "</table>\n")
@@ -483,16 +455,16 @@ ngx_upstream_check_status_html_format(ngx_healthcheck_status_writer_t *writer,
             stream_up_count, stream_count-stream_up_count, stream_count)
         != NGX_OK) return NGX_ERROR;
 
-    peers = stream_peers_ctx; //stream
+    peers = &snapshots[1];
     if(peers != NULL){
         peer = peers->peers.elts;
         for (i = 0; i < peers->peers.nelts; i++) {
             if (flag & NGX_CHECK_STATUS_DOWN) {
-                if (!peer[i].shm->down) {
+                if (!peer[i].health.down) {
                     continue;
                 }
             } else if (flag & NGX_CHECK_STATUS_UP) {
-                if (peer[i].shm->down) {
+                if (peer[i].health.down) {
                     continue;
                 }
             }
@@ -512,19 +484,19 @@ ngx_upstream_check_status_html_format(ngx_healthcheck_status_writer_t *writer,
                     "    <td>%M</td>\n"
                     "    <td>%M</td>\n"
                     "  </tr>\n",
-                    peer[i].shm->down ? " bgcolor=\"#FF0000\"" : "",
-                    i,
+                    peer[i].health.down ? " bgcolor=\"#FF0000\"" : "",
+                    peer[i].index,
                     peer[i].upstream_name,
                     &peer[i].peer_addr->name,
-                    peer[i].shm->down ? "down" : "up",
-                    peer[i].shm->rise_count,
-                    peer[i].shm->fall_count,
+                    peer[i].health.down ? "down" : "up",
+                    peer[i].health.rise_count,
+                    peer[i].health.fall_count,
                     &peer[i].conf->check_type_conf->name,
                     peer[i].conf->port,
-                    peer[i].shm->last_check_delay,
-                    peer[i].shm->avg_check_delay,
-                    peer[i].shm->min_check_delay,
-                    peer[i].shm->max_check_delay) != NGX_OK) return NGX_ERROR;
+                    peer[i].health.last_check_delay,
+                    peer[i].health.avg_check_delay,
+                    peer[i].health.min_check_delay,
+                    peer[i].health.max_check_delay) != NGX_OK) return NGX_ERROR;
         }
     }
 
@@ -540,78 +512,79 @@ ngx_upstream_check_status_html_format(ngx_healthcheck_status_writer_t *writer,
 
 static ngx_int_t
 ngx_upstream_check_status_csv_format(ngx_healthcheck_status_writer_t *writer,
-    ngx_upstream_check_peers_t *peers, ngx_uint_t flag)
+    ngx_healthcheck_snapshot_t *snapshots, ngx_uint_t flag)
 {
     ngx_uint_t                       i;
-    ngx_upstream_check_peer_t  *peer;
+    ngx_healthcheck_snapshot_peer_t  *peer;
+    ngx_healthcheck_snapshot_t       *peers;
 
     if (ngx_healthcheck_status_writer_printf(writer,
             "index,upstream_type,upstream_name,host,rise,fall,check_type,check_port,last_delay,avg_delay,min_delay,max_delay,status\n")
         != NGX_OK) return NGX_ERROR;
-    peers = http_peers_ctx; //http
+    peers = &snapshots[0];
     peer = peers->peers.elts;
     for (i = 0; i < peers->peers.nelts; i++) {
 
         if (flag & NGX_CHECK_STATUS_DOWN) {
 
-            if (!peer[i].shm->down) {
+            if (!peer[i].health.down) {
                 continue;
             }
 
         } else if (flag & NGX_CHECK_STATUS_UP) {
 
-            if (peer[i].shm->down) {
+            if (peer[i].health.down) {
                 continue;
             }
         }
 
         if (ngx_healthcheck_status_writer_printf(writer,
                 "%ui,http,%V,%V,%ui,%ui,%V,%ui,%M,%M,%M,%M,%s\n",
-                i,
+                peer[i].index,
                 peer[i].upstream_name,
                 &peer[i].peer_addr->name,
-                peer[i].shm->rise_count,
-                peer[i].shm->fall_count,
+                peer[i].health.rise_count,
+                peer[i].health.fall_count,
                 &peer[i].conf->check_type_conf->name,
                 peer[i].conf->port,
-                peer[i].shm->last_check_delay,
-                peer[i].shm->avg_check_delay,
-                peer[i].shm->min_check_delay,
-                peer[i].shm->max_check_delay,
-                peer[i].shm->down ? "down" : "up") != NGX_OK) return NGX_ERROR;
+                peer[i].health.last_check_delay,
+                peer[i].health.avg_check_delay,
+                peer[i].health.min_check_delay,
+                peer[i].health.max_check_delay,
+                peer[i].health.down ? "down" : "up") != NGX_OK) return NGX_ERROR;
     }
-    peers = stream_peers_ctx; //stream
+    peers = &snapshots[1];
     if(peers == NULL) return NGX_OK;
     peer = peers->peers.elts;
     for (i = 0; i < peers->peers.nelts; i++) {
 
         if (flag & NGX_CHECK_STATUS_DOWN) {
 
-            if (!peer[i].shm->down) {
+            if (!peer[i].health.down) {
                 continue;
             }
 
         } else if (flag & NGX_CHECK_STATUS_UP) {
 
-            if (peer[i].shm->down) {
+            if (peer[i].health.down) {
                 continue;
             }
         }
 
         if (ngx_healthcheck_status_writer_printf(writer,
                 "%ui,stream,%V,%V,%ui,%ui,%V,%ui,%M,%M,%M,%M,%s\n",
-                i,
+                peer[i].index,
                 peer[i].upstream_name,
                 &peer[i].peer_addr->name,
-                peer[i].shm->rise_count,
-                peer[i].shm->fall_count,
+                peer[i].health.rise_count,
+                peer[i].health.fall_count,
                 &peer[i].conf->check_type_conf->name,
                 peer[i].conf->port,
-                peer[i].shm->last_check_delay,
-                peer[i].shm->avg_check_delay,
-                peer[i].shm->min_check_delay,
-                peer[i].shm->max_check_delay,
-                peer[i].shm->down ? "down" : "up") != NGX_OK) return NGX_ERROR;
+                peer[i].health.last_check_delay,
+                peer[i].health.avg_check_delay,
+                peer[i].health.min_check_delay,
+                peer[i].health.max_check_delay,
+                peer[i].health.down ? "down" : "up") != NGX_OK) return NGX_ERROR;
     }
 
     return NGX_OK;
@@ -620,120 +593,27 @@ ngx_upstream_check_status_csv_format(ngx_healthcheck_status_writer_t *writer,
 
 static ngx_int_t
 ngx_upstream_check_status_json_format(ngx_healthcheck_status_writer_t *writer,
-    ngx_upstream_check_peers_t *peers, ngx_uint_t flag)
+    ngx_healthcheck_snapshot_t *snapshots, ngx_uint_t flag)
 {
-    ngx_uint_t                 count, i;
-    ngx_uint_t stream_count=0, http_count=0;
-    ngx_upstream_check_peer_t  *peer;
+    ngx_uint_t                       i, module, count, generation;
+    ngx_healthcheck_snapshot_peer_t  *peer;
 
-
-    /* calc display total num after filter param*/
-    count = 0;
-
-    peers = stream_peers_ctx; //stream
-    if(peers != NULL){  //when no stream section, peers is NULL
-        peer = peers->peers.elts; 
-        for (i = 0; i < peers->peers.nelts; i++) {
-            if (flag & NGX_CHECK_STATUS_DOWN) {
-                if (!peer[i].shm->down) {
-                    continue;
-                }
-            } else if (flag & NGX_CHECK_STATUS_UP) {
-                if (peer[i].shm->down) {
-                    continue;
-                }
-            }
-            count++;stream_count++;
-        }
-    }
-
-    peers = http_peers_ctx; //http
-    peer = peers->peers.elts; 
-    for (i = 0; i < peers->peers.nelts; i++) {
-        if (flag & NGX_CHECK_STATUS_DOWN) {
-            if (!peer[i].shm->down) {
-                continue;
-            }
-        } else if (flag & NGX_CHECK_STATUS_UP) {
-            if (peer[i].shm->down) {
-                continue;
-            }
-        }
-        count++;http_count++;
-    }
+    count = snapshots[0].peers.nelts + snapshots[1].peers.nelts;
+    generation = snapshots[1].generation ? snapshots[1].generation
+                                         : snapshots[0].generation;
 
     if (ngx_healthcheck_status_writer_printf(writer,
             "{\"servers\": {\n"
             "  \"total\": %ui,\n"
             "  \"generation\": %ui,\n"
             "  \"http\": [\n",
-            count,
-            ngx_stream_upstream_check_shm_generation) != NGX_OK) return NGX_ERROR;
+            count, generation) != NGX_OK) return NGX_ERROR;
 
-//http
-    count = 0;
-    for (i = 0; i < peers->peers.nelts; i++) {
-        if (flag & NGX_CHECK_STATUS_DOWN) {
-            if (!peer[i].shm->down) {
-                continue;
-            }
-        } else if (flag & NGX_CHECK_STATUS_UP) {
-            if (peer[i].shm->down) {
-                continue;
-            }
-        }
-        count++; 
-        if (ngx_healthcheck_status_writer_printf(writer,
-                "    {\"index\": %ui, "
-                "\"upstream\": \"%V\", "
-                "\"name\": \"%V\", "
-                "\"status\": \"%s\", "
-                "\"rise\": %ui, "
-                "\"fall\": %ui, "
-                "\"type\": \"%V\", "
-                "\"port\": %ui, "
-                "\"last_delay_ms\": %M, "
-                "\"avg_delay_ms\": %M, "
-                "\"min_delay_ms\": %M, "
-                "\"max_delay_ms\": %M}"
-                "%s\n",
-                i,
-                peer[i].upstream_name,
-                &peer[i].peer_addr->name,
-                peer[i].shm->down ? "down" : "up",
-                peer[i].shm->rise_count,
-                peer[i].shm->fall_count,
-                &peer[i].conf->check_type_conf->name,
-                peer[i].conf->port,
-                peer[i].shm->last_check_delay,
-                peer[i].shm->avg_check_delay,
-                peer[i].shm->min_check_delay,
-                peer[i].shm->max_check_delay,
-                (count == http_count) ? "" : ",") != NGX_OK) return NGX_ERROR;
-    }
-
-//http end
-
-    if (ngx_healthcheck_status_writer_printf(writer,
-            "  ],\n"
-            "  \"stream\": [\n") != NGX_OK) return NGX_ERROR;
-
-    peers = stream_peers_ctx; //stream
-    count = 0;
-    if(peers != NULL){
-        peer = peers->peers.elts;
-
-        for (i = 0; i < peers->peers.nelts; i++) {
-            if (flag & NGX_CHECK_STATUS_DOWN) {
-                if (!peer[i].shm->down) {
-                    continue;
-                }
-            } else if (flag & NGX_CHECK_STATUS_UP) {
-                if (peer[i].shm->down) {
-                    continue;
-                }
-            }
-            count++; 
+    /* 两组均遍历固定选中集合，逗号与 total 使用同一份记录数。 */
+    for (module = 0; module < 2; module++) {
+        peer = snapshots[module].peers.elts;
+        count = snapshots[module].peers.nelts;
+        for (i = 0; i < count; i++) {
             if (ngx_healthcheck_status_writer_printf(writer,
                     "    {\"index\": %ui, "
                     "\"upstream\": \"%V\", "
@@ -748,19 +628,24 @@ ngx_upstream_check_status_json_format(ngx_healthcheck_status_writer_t *writer,
                     "\"min_delay_ms\": %M, "
                     "\"max_delay_ms\": %M}"
                     "%s\n",
-                    i,
+                    peer[i].index,
                     peer[i].upstream_name,
                     &peer[i].peer_addr->name,
-                    peer[i].shm->down ? "down" : "up",
-                    peer[i].shm->rise_count,
-                    peer[i].shm->fall_count,
+                    peer[i].health.down ? "down" : "up",
+                    peer[i].health.rise_count,
+                    peer[i].health.fall_count,
                     &peer[i].conf->check_type_conf->name,
                     peer[i].conf->port,
-                    peer[i].shm->last_check_delay,
-                    peer[i].shm->avg_check_delay,
-                    peer[i].shm->min_check_delay,
-                    peer[i].shm->max_check_delay,
-                    (count == stream_count) ? "" : ",") != NGX_OK) return NGX_ERROR;
+                    peer[i].health.last_check_delay,
+                    peer[i].health.avg_check_delay,
+                    peer[i].health.min_check_delay,
+                    peer[i].health.max_check_delay,
+                    (i + 1 == count) ? "" : ",") != NGX_OK) return NGX_ERROR;
+        }
+        if (module == 0 && ngx_healthcheck_status_writer_printf(writer,
+                "  ],\n  \"stream\": [\n") != NGX_OK)
+        {
+            return NGX_ERROR;
         }
     }
 
@@ -777,12 +662,13 @@ ngx_upstream_check_status_json_format(ngx_healthcheck_status_writer_t *writer,
 static ngx_int_t
 ngx_http_upstream_check_status_prometheus_format(
     ngx_healthcheck_status_writer_t *writer,
-    ngx_upstream_check_peers_t *peers, ngx_uint_t flag)
+    ngx_healthcheck_snapshot_t *snapshots, ngx_uint_t flag)
 {
     ngx_uint_t                    count, upCount, downCount, i, j;
-    ngx_upstream_check_peer_t    *peer;
+    ngx_healthcheck_snapshot_peer_t *peer;
+    ngx_healthcheck_snapshot_t   *peers;
     ngx_str_t                     upstream_type[2] = {ngx_string("http"), ngx_string("stream")};
-    ngx_upstream_check_peers_t   *upstream_peers[2] = {http_peers_ctx, stream_peers_ctx};
+    ngx_healthcheck_snapshot_t   *upstream_peers[2] = {&snapshots[0], &snapshots[1]};
 
     /* 1. summary */
     upCount = 0;
@@ -801,19 +687,19 @@ ngx_http_upstream_check_status_prometheus_format(
     */
             if (flag & NGX_CHECK_STATUS_DOWN) {
 
-                if (!peer[i].shm->down) {
+                if (!peer[i].health.down) {
                     continue;
                 }
 
             } else if (flag & NGX_CHECK_STATUS_UP) {
 
-                if (peer[i].shm->down) {
+                if (peer[i].health.down) {
                     continue;
                 }
             }
 
             count++;
-            if (peer[i].shm->down) {
+            if (peer[i].health.down) {
                 downCount++;
             } else {
                 upCount++;
@@ -836,7 +722,8 @@ ngx_http_upstream_check_status_prometheus_format(
         count,
         upCount,
         downCount,
-        ngx_stream_upstream_check_shm_generation) != NGX_OK) return NGX_ERROR;
+        snapshots[1].generation ? snapshots[1].generation : snapshots[0].generation)
+        != NGX_OK) return NGX_ERROR;
 
     /* 2. ngninx_upstream_server_rise */
     if (ngx_healthcheck_status_writer_printf(writer,
@@ -857,27 +744,27 @@ ngx_http_upstream_check_status_prometheus_format(
     */
             if (flag & NGX_CHECK_STATUS_DOWN) {
 
-                if (!peer[i].shm->down) {
+                if (!peer[i].health.down) {
                     continue;
                 }
 
             } else if (flag & NGX_CHECK_STATUS_UP) {
 
-                if (peer[i].shm->down) {
+                if (peer[i].health.down) {
                     continue;
                 }
             }
 
             if (ngx_healthcheck_status_writer_printf(writer,
                     "nginx_upstream_server_rise{index=\"%ui\",upstream_type=\"%V\",upstream=\"%V\",name=\"%V\",status=\"%s\",type=\"%V\",port=\"%ui\"} %ui\n",
-                    i,
+                    peer[i].index,
                     &upstream_type[j],
                     peer[i].upstream_name,
                     &peer[i].peer_addr->name,
-                    peer[i].shm->down ? "down" : "up",
+                    peer[i].health.down ? "down" : "up",
                     &peer[i].conf->check_type_conf->name,
                     peer[i].conf->port,
-                    peer[i].shm->rise_count) != NGX_OK) return NGX_ERROR;
+                    peer[i].health.rise_count) != NGX_OK) return NGX_ERROR;
         }
     }
 
@@ -899,27 +786,27 @@ ngx_http_upstream_check_status_prometheus_format(
     */
             if (flag & NGX_CHECK_STATUS_DOWN) {
 
-                if (!peer[i].shm->down) {
+                if (!peer[i].health.down) {
                     continue;
                 }
 
             } else if (flag & NGX_CHECK_STATUS_UP) {
 
-                if (peer[i].shm->down) {
+                if (peer[i].health.down) {
                     continue;
                 }
             }
 
             if (ngx_healthcheck_status_writer_printf(writer,
                     "nginx_upstream_server_fall{index=\"%ui\",upstream_type=\"%V\",upstream=\"%V\",name=\"%V\",status=\"%s\",type=\"%V\",port=\"%ui\"} %ui\n",
-                    i,
+                    peer[i].index,
                     &upstream_type[j],
                     peer[i].upstream_name,
                     &peer[i].peer_addr->name,
-                    peer[i].shm->down ? "down" : "up",
+                    peer[i].health.down ? "down" : "up",
                     &peer[i].conf->check_type_conf->name,
                     peer[i].conf->port,
-                    peer[i].shm->fall_count) != NGX_OK) return NGX_ERROR;
+                    peer[i].health.fall_count) != NGX_OK) return NGX_ERROR;
         }
     }
 
@@ -941,26 +828,26 @@ ngx_http_upstream_check_status_prometheus_format(
     */
             if (flag & NGX_CHECK_STATUS_DOWN) {
 
-                if (!peer[i].shm->down) {
+                if (!peer[i].health.down) {
                     continue;
                 }
 
             } else if (flag & NGX_CHECK_STATUS_UP) {
 
-                if (peer[i].shm->down) {
+                if (peer[i].health.down) {
                     continue;
                 }
             }
 
             if (ngx_healthcheck_status_writer_printf(writer,
                     "nginx_upstream_server_active{index=\"%ui\",upstream_type=\"%V\",upstream=\"%V\",name=\"%V\",type=\"%V\",port=\"%ui\"} %ui\n",
-                    i,
+                    peer[i].index,
                     &upstream_type[j],
                     peer[i].upstream_name,
                     &peer[i].peer_addr->name,
                     &peer[i].conf->check_type_conf->name,
                     peer[i].conf->port,
-                    peer[i].shm->down ? 0 : 1) != NGX_OK) return NGX_ERROR;
+                    peer[i].health.down ? 0 : 1) != NGX_OK) return NGX_ERROR;
         }
     }
 

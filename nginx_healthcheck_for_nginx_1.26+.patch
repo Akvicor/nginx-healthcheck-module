@@ -454,3 +454,119 @@ index bd96667..7d183c2 100644
      NGX_COMPAT_BEGIN(25)
      NGX_COMPAT_END
  };
+diff --git a/src/http/modules/ngx_http_upstream_random_module.c b/src/http/modules/ngx_http_upstream_random_module.c
+--- a/src/http/modules/ngx_http_upstream_random_module.c
++++ b/src/http/modules/ngx_http_upstream_random_module.c
+@@ -8,6 +8,10 @@
+ #include <ngx_core.h>
+ #include <ngx_http.h>
+
++#if (NGX_HTTP_UPSTREAM_CHECK)
++#include "ngx_http_upstream_check_module.h"
++#endif
++
+
+ typedef struct {
+     ngx_http_upstream_rr_peer_t          *peer;
+@@ -250,6 +254,13 @@
+             goto next;
+         }
+
++#if (NGX_HTTP_UPSTREAM_CHECK)
++        if (ngx_http_upstream_check_peer_down(peer->check_index)) {
++            ngx_http_upstream_rr_peer_unlock(peers, peer);
++            goto next;
++        }
++#endif
++
+         if (peer->max_fails
+             && peer->fails >= peer->max_fails
+             && now - peer->checked <= peer->fail_timeout)
+@@ -351,6 +362,12 @@
+             goto next;
+         }
+
++#if (NGX_HTTP_UPSTREAM_CHECK)
++        if (ngx_http_upstream_check_peer_down(peer->check_index)) {
++            goto next;
++        }
++#endif
++
+         if (peer->max_fails
+             && peer->fails >= peer->max_fails
+             && now - peer->checked <= peer->fail_timeout)
+@@ -363,6 +380,16 @@
+         }
+
+         if (prev) {
++#if (NGX_HTTP_UPSTREAM_CHECK)
++            /* 暂存候选的主动状态可能在两次抽样之间发生变化。 */
++            if (ngx_http_upstream_check_peer_down(prev->check_index)
++                || ngx_http_upstream_check_peer_down(peer->check_index))
++            {
++                prev = NULL;
++                goto next;
++            }
++#endif
++
+             if (peer->conns * prev->weight > prev->conns * peer->weight) {
+                 peer = prev;
+                 n = p / (8 * sizeof(uintptr_t));
+diff --git a/src/stream/ngx_stream_upstream_random_module.c b/src/stream/ngx_stream_upstream_random_module.c
+--- a/src/stream/ngx_stream_upstream_random_module.c
++++ b/src/stream/ngx_stream_upstream_random_module.c
+@@ -8,6 +8,10 @@
+ #include <ngx_core.h>
+ #include <ngx_stream.h>
+
++#if (NGX_STREAM_UPSTREAM_CHECK)
++#include "ngx_stream_upstream_check_module.h"
++#endif
++
+
+ typedef struct {
+     ngx_stream_upstream_rr_peer_t          *peer;
+@@ -250,6 +254,13 @@
+             goto next;
+         }
+
++#if (NGX_STREAM_UPSTREAM_CHECK)
++        if (ngx_stream_upstream_check_peer_down(peer->check_index)) {
++            ngx_stream_upstream_rr_peer_unlock(peers, peer);
++            goto next;
++        }
++#endif
++
+         if (peer->max_fails
+             && peer->fails >= peer->max_fails
+             && now - peer->checked <= peer->fail_timeout)
+@@ -351,6 +362,12 @@
+             goto next;
+         }
+
++#if (NGX_STREAM_UPSTREAM_CHECK)
++        if (ngx_stream_upstream_check_peer_down(peer->check_index)) {
++            goto next;
++        }
++#endif
++
+         if (peer->max_fails
+             && peer->fails >= peer->max_fails
+             && now - peer->checked <= peer->fail_timeout)
+@@ -363,6 +380,16 @@
+         }
+
+         if (prev) {
++#if (NGX_STREAM_UPSTREAM_CHECK)
++            /* 暂存候选的主动状态可能在两次抽样之间发生变化。 */
++            if (ngx_stream_upstream_check_peer_down(prev->check_index)
++                || ngx_stream_upstream_check_peer_down(peer->check_index))
++            {
++                prev = NULL;
++                goto next;
++            }
++#endif
++
+             if (peer->conns * prev->weight > prev->conns * peer->weight) {
+                 peer = prev;
+                 n = p / (8 * sizeof(uintptr_t));

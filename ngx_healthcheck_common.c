@@ -10,7 +10,6 @@ typedef struct ngx_healthcheck_identity_node_s ngx_healthcheck_identity_node_t;
 struct ngx_healthcheck_identity_node_s {
     ngx_upstream_check_peer_shm_t   *peer;
     ngx_healthcheck_identity_node_t *next;
-    ngx_flag_t                       consumed;
 };
 
 struct ngx_healthcheck_identity_index_s {
@@ -216,14 +215,14 @@ ngx_healthcheck_identity_index_take(ngx_healthcheck_identity_index_t *index,
     ngx_upstream_check_peer_t *peer)
 {
     ngx_uint_t                        bucket;
-    ngx_healthcheck_identity_node_t  *node;
+    ngx_healthcheck_identity_node_t  *node, **link;
 
     bucket = ngx_healthcheck_peer_identity_hash(peer) % index->bucket_count;
-    for (node = index->buckets[bucket]; node; node = node->next) {
-        if (!node->consumed
-            && ngx_healthcheck_identity_equal(node->peer, peer))
-        {
-            node->consumed = 1;
+    for (link = &index->buckets[bucket]; *link; link = &node->next) {
+        node = *link;
+        if (ngx_healthcheck_identity_equal(node->peer, peer)) {
+            /* 消费临时索引，旧共享记录继续由其 cycle 持有。 */
+            *link = node->next;
             return node->peer;
         }
     }
@@ -238,9 +237,13 @@ ngx_healthcheck_find_latest_peers_shm(ngx_cycle_t *cycle, void *tag)
     ngx_uint_t                       i;
     ngx_list_part_t                 *part;
     ngx_shm_zone_t                  *zones;
+    ngx_upstream_check_peers_t      *peers;
     ngx_upstream_check_peers_shm_t  *candidate, *latest;
 
     latest = NULL;
+    if (cycle == NULL) {
+        return NULL;
+    }
     part = &cycle->shared_memory.part;
     zones = part->elts;
 
@@ -258,8 +261,9 @@ ngx_healthcheck_find_latest_peers_shm(ngx_cycle_t *cycle, void *tag)
             continue;
         }
 
-        candidate = zones[i].data;
-        if (candidate->magic != NGX_HEALTHCHECK_SHM_MAGIC
+        peers = zones[i].data;
+        candidate = peers->peers_shm;
+        if (candidate == NULL || candidate->magic != NGX_HEALTHCHECK_SHM_MAGIC
             || candidate->version != NGX_HEALTHCHECK_SHM_VERSION)
         {
             continue;
