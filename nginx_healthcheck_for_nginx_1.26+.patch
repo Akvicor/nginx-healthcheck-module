@@ -122,7 +122,7 @@ index ebe0627..3525035 100644
                  continue;
              }
 diff --git a/src/http/ngx_http_upstream_round_robin.c b/src/http/ngx_http_upstream_round_robin.c
-index 1f15fae..d507a0e 100644
+index 1f15fae..a316266 100644
 --- a/src/http/ngx_http_upstream_round_robin.c
 +++ b/src/http/ngx_http_upstream_round_robin.c
 @@ -9,6 +9,9 @@
@@ -135,40 +135,51 @@ index 1f15fae..d507a0e 100644
 
  #define ngx_http_upstream_tries(p) ((p)->tries                                \
                                      + ((p)->next ? (p)->next->tries : 0))
-@@ -104,6 +107,15 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
+@@ -104,6 +107,21 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
                  peer[n].down = server[i].down;
                  peer[n].server = server[i].name;
 
 +#if (NGX_HTTP_UPSTREAM_CHECK)
-+                if (!server[i].down) {
++                peer[n].check_index = (ngx_uint_t) NGX_ERROR;
++                if (!server[i].down && ngx_http_upstream_check_enabled(us)) {
 +                    peer[n].check_index =
 +                        ngx_http_upstream_check_add_peer(cf, us, &server[i].addrs[j]);
-+                } else {
-+                    peer[n].check_index = (ngx_uint_t) NGX_ERROR;
++                    if (peer[n].check_index == (ngx_uint_t) NGX_ERROR) {
++                        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                                           "healthcheck registration failed for "
++                                           "\"%V\" in upstream \"%V\"",
++                                           &server[i].addrs[j].name, &us->host);
++                        return NGX_ERROR;
++                    }
 +                }
 +#endif
 +
                  *peerp = &peer[n];
                  peerp = &peer[n].next;
                  n++;
-@@ -174,6 +186,16 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
+@@ -174,6 +192,21 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
                  peer[n].down = server[i].down;
                  peer[n].server = server[i].name;
 
 +#if (NGX_HTTP_UPSTREAM_CHECK)
-+                if (!server[i].down) {
++                peer[n].check_index = (ngx_uint_t) NGX_ERROR;
++                if (!server[i].down && ngx_http_upstream_check_enabled(us)) {
 +                    peer[n].check_index =
 +                        ngx_http_upstream_check_add_peer(cf, us, &server[i].addrs[j]);
-+                }
-+                else {
-+                    peer[n].check_index = (ngx_uint_t) NGX_ERROR;
++                    if (peer[n].check_index == (ngx_uint_t) NGX_ERROR) {
++                        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                                           "healthcheck registration failed for "
++                                           "\"%V\" in upstream \"%V\"",
++                                           &server[i].addrs[j].name, &us->host);
++                        return NGX_ERROR;
++                    }
 +                }
 +#endif
 +
                  *peerp = &peer[n];
                  peerp = &peer[n].next;
                  n++;
-@@ -241,6 +263,9 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
+@@ -241,6 +274,9 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
          peer[i].max_conns = 0;
          peer[i].max_fails = 1;
          peer[i].fail_timeout = 10;
@@ -178,7 +189,7 @@ index 1f15fae..d507a0e 100644
          *peerp = &peer[i];
          peerp = &peer[i].next;
      }
-@@ -358,6 +383,9 @@ ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
+@@ -358,6 +394,9 @@ ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
          peer[0].max_conns = 0;
          peer[0].max_fails = 1;
          peer[0].fail_timeout = 10;
@@ -188,7 +199,7 @@ index 1f15fae..d507a0e 100644
          peers->peer = peer;
 
      } else {
-@@ -392,6 +420,9 @@ ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
+@@ -392,6 +431,9 @@ ngx_http_upstream_create_round_robin_peer(ngx_http_request_t *r,
              peer[i].max_conns = 0;
              peer[i].max_fails = 1;
              peer[i].fail_timeout = 10;
@@ -198,7 +209,7 @@ index 1f15fae..d507a0e 100644
              *peerp = &peer[i];
              peerp = &peer[i].next;
          }
-@@ -457,6 +488,12 @@ ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
+@@ -457,6 +499,12 @@ ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
              goto failed;
          }
 
@@ -211,7 +222,7 @@ index 1f15fae..d507a0e 100644
          rrp->current = peer;
 
      } else {
-@@ -551,6 +588,12 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
+@@ -551,6 +599,12 @@ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peer_data_t *rrp)
              continue;
          }
 
@@ -336,7 +347,7 @@ index 739b20a..043858d 100644
                  continue;
              }
 diff --git a/src/stream/ngx_stream_upstream_round_robin.c b/src/stream/ngx_stream_upstream_round_robin.c
-index ae3bf37..5d1f8c5 100644
+index ae3bf37..6b14e7e 100644
 --- a/src/stream/ngx_stream_upstream_round_robin.c
 +++ b/src/stream/ngx_stream_upstream_round_robin.c
 @@ -8,6 +8,9 @@
@@ -349,41 +360,51 @@ index ae3bf37..5d1f8c5 100644
 
 
  #define ngx_stream_upstream_tries(p) ((p)->tries                              \
-@@ -110,6 +113,16 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
+@@ -110,6 +113,21 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
                  peer[n].down = server[i].down;
                  peer[n].server = server[i].name;
 
 +#if (NGX_STREAM_UPSTREAM_CHECK)
-+                if (!server[i].down) {
++                peer[n].check_index = (ngx_uint_t) NGX_ERROR;
++                if (!server[i].down && ngx_stream_upstream_check_enabled(us)) {
 +                    peer[n].check_index =
 +                        ngx_stream_upstream_check_add_peer(cf, us, &server[i].addrs[j]);
-+                }
-+                else {
-+                    peer[n].check_index = (ngx_uint_t) NGX_ERROR;
++                    if (peer[n].check_index == (ngx_uint_t) NGX_ERROR) {
++                        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                                           "healthcheck registration failed for "
++                                           "\"%V\" in upstream \"%V\"",
++                                           &server[i].addrs[j].name, &us->host);
++                        return NGX_ERROR;
++                    }
 +                }
 +#endif
 +
                  *peerp = &peer[n];
                  peerp = &peer[n].next;
                  n++;
-@@ -180,6 +193,16 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
+@@ -180,6 +198,21 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
                  peer[n].down = server[i].down;
                  peer[n].server = server[i].name;
 
 +#if (NGX_STREAM_UPSTREAM_CHECK)
-+                if (!server[i].down) {
++                peer[n].check_index = (ngx_uint_t) NGX_ERROR;
++                if (!server[i].down && ngx_stream_upstream_check_enabled(us)) {
 +                    peer[n].check_index =
 +                        ngx_stream_upstream_check_add_peer(cf, us, &server[i].addrs[j]);
-+                }
-+                else {
-+                    peer[n].check_index = (ngx_uint_t) NGX_ERROR;
++                    if (peer[n].check_index == (ngx_uint_t) NGX_ERROR) {
++                        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                                           "healthcheck registration failed for "
++                                           "\"%V\" in upstream \"%V\"",
++                                           &server[i].addrs[j].name, &us->host);
++                        return NGX_ERROR;
++                    }
 +                }
 +#endif
 +
                  *peerp = &peer[n];
                  peerp = &peer[n].next;
                  n++;
-@@ -247,6 +270,9 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
+@@ -247,6 +280,9 @@ ngx_stream_upstream_init_round_robin(ngx_conf_t *cf,
          peer[i].max_conns = 0;
          peer[i].max_fails = 1;
          peer[i].fail_timeout = 10;
@@ -393,7 +414,7 @@ index ae3bf37..5d1f8c5 100644
          *peerp = &peer[i];
          peerp = &peer[i].next;
      }
-@@ -368,6 +394,9 @@ ngx_stream_upstream_create_round_robin_peer(ngx_stream_session_t *s,
+@@ -368,6 +404,9 @@ ngx_stream_upstream_create_round_robin_peer(ngx_stream_session_t *s,
          peer[0].max_conns = 0;
          peer[0].max_fails = 1;
          peer[0].fail_timeout = 10;
@@ -403,7 +424,7 @@ index ae3bf37..5d1f8c5 100644
          peers->peer = peer;
 
      } else {
-@@ -402,6 +431,9 @@ ngx_stream_upstream_create_round_robin_peer(ngx_stream_session_t *s,
+@@ -402,6 +441,9 @@ ngx_stream_upstream_create_round_robin_peer(ngx_stream_session_t *s,
              peer[i].max_conns = 0;
              peer[i].max_fails = 1;
              peer[i].fail_timeout = 10;
@@ -413,7 +434,7 @@ index ae3bf37..5d1f8c5 100644
              *peerp = &peer[i];
              peerp = &peer[i].next;
          }
-@@ -466,6 +498,12 @@ ngx_stream_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
+@@ -466,6 +508,12 @@ ngx_stream_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
              goto failed;
          }
 
@@ -426,7 +447,7 @@ index ae3bf37..5d1f8c5 100644
          rrp->current = peer;
 
      } else {
-@@ -571,6 +609,12 @@ ngx_stream_upstream_get_peer(ngx_stream_upstream_rr_peer_data_t *rrp)
+@@ -571,6 +619,12 @@ ngx_stream_upstream_get_peer(ngx_stream_upstream_rr_peer_data_t *rrp)
              continue;
          }
 

@@ -7,10 +7,12 @@
 void *ngx_healthcheck_create_main_conf(ngx_conf_t *cf);
 void *ngx_healthcheck_create_srv_conf(ngx_conf_t *cf);
 char *ngx_healthcheck_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-char *ngx_healthcheck_keepalive(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 char *ngx_healthcheck_shm_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
-/* 注册持久配置地址，检查端口覆盖只改变探测地址。 */
+/*
+ * 注册持久配置地址，检查端口覆盖只改变探测地址。未启用检查或注册失败均返回
+ * NGX_ERROR；调用方先通过 enabled 查询区分两者，注册失败时配置加载失败。
+ */
 ngx_uint_t ngx_healthcheck_add_peer(ngx_conf_t *cf,
     ngx_healthcheck_main_conf_t *main, ngx_upstream_check_srv_conf_t *conf,
     ngx_str_t *upstream, ngx_addr_t *address);

@@ -36,7 +36,7 @@ http {
         server 127.0.0.1:8082;
         server 127.0.0.2:8082;
 
-        check interval=3000 rise=2 fall=5 timeout=5000 default_down=true type=tcp;
+        check interval=3000 rise=2 fall=5 timeout=1000 default_down=true type=tcp;
     }
 }
 
@@ -45,7 +45,7 @@ stream {
         server 127.0.0.1:22;
         server 192.168.0.2:22;
 
-        check interval=3000 rise=2 fall=5 timeout=5000 default_down=true type=tcp;
+        check interval=3000 rise=2 fall=5 timeout=1000 default_down=true type=tcp;
     }
 
     server {
@@ -57,7 +57,7 @@ stream {
         server 127.0.0.1:5432;
         server 8.8.8.8:5432;
 
-        check interval=3000 rise=2 fall=5 timeout=5000 default_down=true type=udp;
+        check interval=3000 rise=2 fall=5 timeout=1000 default_down=true type=udp;
     }
 
     server {

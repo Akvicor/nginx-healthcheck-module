@@ -17,6 +17,8 @@ struct ngx_healthcheck_probe_s {
     uint64_t                    deadline;
     ngx_uint_t                  generation;
     ngx_msec_t                  delay;
+    /* 当前保留连接在空闲期累计丢弃的对端数据字节数，新建连接时清零。 */
+    size_t                      discarded;
     ngx_err_t                   error;
     const char                 *reason;
     const char                 *stage;

@@ -5,9 +5,9 @@
 #include <ngx_core.h>
 #include <stdint.h>
 
-/* 版本 2 使用独立锁和双槽发布，旧布局通过版本校验隔离。 */
+/* 版本 3 在双槽状态中记录轮次开始时刻，旧布局通过版本校验隔离。 */
 #define NGX_HEALTHCHECK_SHM_MAGIC    0x48434b31U
-#define NGX_HEALTHCHECK_SHM_VERSION  2
+#define NGX_HEALTHCHECK_SHM_VERSION  3
 #define NGX_HEALTHCHECK_HTTP         1
 #define NGX_HEALTHCHECK_STREAM       2
 #define NGX_HEALTHCHECK_LOCK_NS      UINT64_C(1000000)
@@ -35,9 +35,14 @@ typedef struct {
     uint64_t       delay_sample_count;
 } ngx_healthcheck_health_t;
 
-/* 健康、资格和进度共用一次发布，避免死亡恢复读到半份结果。 */
+/*
+ * 健康、资格和进度共用一次发布，避免死亡恢复读到半份结果。
+ * started 为最近一轮的开始时刻（宽位单调毫秒），下一轮不早于 started + interval；
+ * reload 时随健康值一起继承，保持探测节奏连续。
+ */
 typedef struct {
     ngx_healthcheck_health_t  health;
+    uint64_t                  started;
     ngx_pid_t                 owner;
     ngx_uint_t                worker;
     uint64_t                  instance;

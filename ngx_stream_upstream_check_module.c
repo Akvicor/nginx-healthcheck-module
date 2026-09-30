@@ -14,8 +14,6 @@ static void ngx_stream_upstream_check_exit_process(ngx_cycle_t *cycle);
 static ngx_command_t ngx_stream_upstream_check_commands[] = {
     { ngx_string("check"), NGX_STREAM_UPS_CONF|NGX_CONF_1MORE,
       ngx_healthcheck_check, NGX_STREAM_SRV_CONF_OFFSET, 0, NULL },
-    { ngx_string("check_keepalive_requests"), NGX_STREAM_UPS_CONF|NGX_CONF_TAKE1,
-      ngx_healthcheck_keepalive, NGX_STREAM_SRV_CONF_OFFSET, 0, NULL },
     { ngx_string("check_shm_size"), NGX_STREAM_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_healthcheck_shm_size, NGX_STREAM_MAIN_CONF_OFFSET, 0, NULL },
     ngx_null_command
@@ -46,18 +44,28 @@ ngx_module_t ngx_stream_upstream_check_module = {
 ngx_upstream_check_peers_t *stream_peers_ctx;
 
 ngx_uint_t
-ngx_stream_upstream_check_add_peer(ngx_conf_t *cf,
-    ngx_stream_upstream_srv_conf_t *upstream, ngx_addr_t *address)
+ngx_stream_upstream_check_enabled(ngx_stream_upstream_srv_conf_t *upstream)
 {
     ngx_upstream_check_srv_conf_t *conf;
 
     if (upstream->srv_conf == NULL) {
-        return (ngx_uint_t) NGX_ERROR;
+        return 0;
     }
     conf = ngx_stream_conf_upstream_srv_conf(upstream, ngx_stream_upstream_check_module);
+    return conf != NULL && conf->check_interval != 0;
+}
+
+ngx_uint_t
+ngx_stream_upstream_check_add_peer(ngx_conf_t *cf,
+    ngx_stream_upstream_srv_conf_t *upstream, ngx_addr_t *address)
+{
+    if (!ngx_stream_upstream_check_enabled(upstream)) {
+        return (ngx_uint_t) NGX_ERROR;
+    }
     return ngx_healthcheck_add_peer(cf,
         ngx_stream_conf_get_module_main_conf(cf, ngx_stream_upstream_check_module),
-        conf, &upstream->host, address);
+        ngx_stream_conf_upstream_srv_conf(upstream, ngx_stream_upstream_check_module),
+        &upstream->host, address);
 }
 
 ngx_uint_t

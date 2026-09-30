@@ -52,11 +52,9 @@ ngx_healthcheck_probe_cleanup(ngx_healthcheck_probe_t *probe, ngx_uint_t reusabl
     if (connection == NULL) {
         return;
     }
-    if (!reusable || !conf->tcp_reuse
+    if (!reusable || !conf->keep_connection
         || conf->check_type_conf->type != NGX_CHECK_TYPE_TCP
-        || connection->error || connection->timedout
-        || (conf->check_keepalive_requests != 0
-            && connection->requests >= conf->check_keepalive_requests))
+        || connection->error || connection->timedout)
     {
         ngx_healthcheck_probe_close(probe);
         return;
@@ -192,6 +190,13 @@ ngx_healthcheck_probe_start(ngx_healthcheck_probe_t *probe)
         return;
     }
     connection = probe->pc.connection;
+    if (connection != NULL && peer->conf->rehandshake != 0
+        && ngx_current_msec - connection->start_time >= peer->conf->rehandshake)
+    {
+        /* 保留连接达到存活上限，本轮关闭并重新握手。 */
+        ngx_healthcheck_probe_close(probe);
+        connection = NULL;
+    }
     if (connection != NULL) {
         if (ngx_healthcheck_tcp_peek(connection, probe) == NGX_OK) {
             connection->idle = 0;
@@ -226,6 +231,15 @@ ngx_healthcheck_probe_start(ngx_healthcheck_probe_t *probe)
     connection->read->log = connection->log;
     connection->write->log = connection->log;
     connection->start_time = ngx_current_msec;
+    probe->discarded = 0;
+    if (!udp && peer->conf->keepalive
+        && ngx_healthcheck_tcp_keepalive(connection, peer->conf) != NGX_OK)
+    {
+        ngx_healthcheck_probe_close(probe);
+        ngx_healthcheck_finish(probe, 0, "keepalive socket option failed",
+                               "setsockopt", 0);
+        return;
+    }
 
 connected:
     connection->read->cancelable = 1;

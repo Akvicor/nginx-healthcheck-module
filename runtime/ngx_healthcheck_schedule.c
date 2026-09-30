@@ -1,5 +1,12 @@
 #include "ngx_healthcheck_runtime.h"
 
+/*
+ * 检查 timer 的重试间隔：领取遇锁竞争时短间隔重试；本轮仍在进行时，结果提交会
+ * 立即触发下一轮，此处的较长间隔只作兜底。
+ */
+#define NGX_HEALTHCHECK_CLAIM_RETRY_MS  10
+#define NGX_HEALTHCHECK_BUSY_RETRY_MS   100
+
 static void ngx_healthcheck_watch(ngx_event_t *event);
 static void ngx_healthcheck_begin(ngx_event_t *event);
 static ngx_int_t ngx_healthcheck_submit(ngx_healthcheck_probe_t *probe,
@@ -308,7 +315,7 @@ ngx_healthcheck_submit(ngx_healthcheck_probe_t *probe, uint64_t limit)
     ngx_upstream_check_srv_conf_t   *conf = probe->peer->conf;
     ngx_uint_t                      changed, previous;
     ngx_int_t                       rc;
-    uint64_t                        now;
+    uint64_t                        now, next;
 
     rc = ngx_healthcheck_owned_lock(probe, &state, limit);
     if (rc != NGX_OK) {
@@ -359,13 +366,17 @@ ngx_healthcheck_submit(ngx_healthcheck_probe_t *probe, uint64_t limit)
     }
     state.health.access_time = now / 1000000;
     state.phase = NGX_HEALTHCHECK_WAITING;
-    state.deadline = ngx_healthcheck_add_time(state.health.access_time,
-        ngx_healthcheck_add_time(conf->check_interval,
-                                ngx_max(conf->check_interval / 2, 1)));
+    /* 下一轮按本轮开始时刻计算；本轮超出 interval 时以提交时刻为准。 */
+    next = ngx_healthcheck_add_time(state.started, conf->check_interval);
+    state.deadline = ngx_max(next, state.health.access_time);
     changed = previous != state.health.down;
     ngx_healthcheck_publish(probe->peer->shm, &state);
     ngx_healthcheck_owned_unlock(probe);
     probe->pending = 0;
+    if (state.health.access_time >= next) {
+        /* 已到下一轮开始时刻，结果提交后立即领取，保持轮次串行且不额外等待。 */
+        ngx_healthcheck_timer(&probe->peer->check_ev, 0);
+    }
 
     if (changed) {
         if (runtime->peers->module == NGX_HEALTHCHECK_HTTP) {
@@ -442,9 +453,13 @@ ngx_healthcheck_deadline(ngx_upstream_check_peer_t *peer,
                                 ngx_max(peer->conf->check_interval / 2, 1)));
 }
 
+/*
+ * 领取新一轮。常规领取要求上一轮已提交且已到“上一轮开始 + interval”，未到时经
+ * wait 返回剩余毫秒；成功后检查 timer 设为下一轮开始时刻。
+ */
 static ngx_int_t
 ngx_healthcheck_claim(ngx_upstream_check_peer_t *peer, ngx_uint_t takeover,
-    ngx_healthcheck_peer_state_t *observed, uint64_t limit)
+    ngx_healthcheck_peer_state_t *observed, uint64_t limit, uint64_t *wait)
 {
     ngx_healthcheck_runtime_t       *runtime = peer->runtime;
     ngx_healthcheck_worker_shm_t    *worker;
@@ -452,7 +467,7 @@ ngx_healthcheck_claim(ngx_upstream_check_peer_t *peer, ngx_uint_t takeover,
     ngx_healthcheck_peer_state_t     state;
     ngx_healthcheck_probe_t         *probe;
     ngx_connection_t               *connection;
-    uint64_t                        now, milliseconds;
+    uint64_t                        now, milliseconds, due;
     ngx_int_t                       rc;
 
     if (!runtime->registered || ngx_healthcheck_stopping(runtime)) {
@@ -510,13 +525,19 @@ ngx_healthcheck_claim(ngx_upstream_check_peer_t *peer, ngx_uint_t takeover,
             rc = NGX_DECLINED;
             goto unlock;
         }
-        if ((state.phase != NGX_HEALTHCHECK_INITIAL
-             && state.phase != NGX_HEALTHCHECK_WAITING)
-            || (state.health.access_time != 0
-                && milliseconds < ngx_healthcheck_add_time(state.health.access_time,
-                                                           peer->conf->check_interval)))
+        if (state.phase != NGX_HEALTHCHECK_INITIAL
+            && state.phase != NGX_HEALTHCHECK_WAITING)
         {
             goto unlock;
+        }
+        if (state.started != 0) {
+            due = ngx_healthcheck_add_time(state.started, peer->conf->check_interval);
+            if (milliseconds < due) {
+                if (wait != NULL) {
+                    *wait = due - milliseconds;
+                }
+                goto unlock;
+            }
         }
     }
     if (state.round == UINT64_MAX
@@ -533,6 +554,7 @@ ngx_healthcheck_claim(ngx_upstream_check_peer_t *peer, ngx_uint_t takeover,
     state.owner = ngx_pid;
     state.instance = runtime->instance;
     state.round++;
+    state.started = milliseconds;
     state.phase = NGX_HEALTHCHECK_PREPARING;
     state.deadline = ngx_healthcheck_add_time(milliseconds, peer->conf->check_timeout);
     ngx_healthcheck_publish(peer->shm, &state);
@@ -576,9 +598,7 @@ unlock:
     probe->timeout.log = runtime->cycle->log;
     probe->timeout.timedout = 0;
     ngx_healthcheck_timer(&probe->timeout, peer->conf->check_timeout);
-    if (!peer->check_ev.timer_set) {
-        ngx_healthcheck_timer(&peer->check_ev, ngx_max(peer->conf->check_interval / 2, 1));
-    }
+    ngx_healthcheck_timer(&peer->check_ev, peer->conf->check_interval);
     ngx_healthcheck_probe_start(probe);
     return NGX_OK;
 }
@@ -588,20 +608,35 @@ ngx_healthcheck_begin(ngx_event_t *event)
 {
     ngx_upstream_check_peer_t *peer = event->data;
     ngx_int_t                 rc;
+    uint64_t                  wait;
 
     if (ngx_healthcheck_stopping(peer->runtime)) {
         return;
     }
-    ngx_healthcheck_timer(event, ngx_max(peer->conf->check_interval / 2, 1));
     if (peer->probe != NULL && (peer->probe->active || peer->probe->pending)) {
+        ngx_healthcheck_timer(event, NGX_HEALTHCHECK_BUSY_RETRY_MS);
         return;
     }
-    rc = ngx_healthcheck_claim(peer, 0, NULL, 0);
-    if (rc == NGX_DECLINED && event->timer_set) {
-        ngx_del_timer(event);
+    wait = 0;
+    rc = ngx_healthcheck_claim(peer, 0, NULL, 0, &wait);
+    switch (rc) {
+    case NGX_OK:
+        /* 领取已把 timer 设为下一轮开始时刻。 */
+        break;
+    case NGX_DECLINED:
+        if (event->timer_set) {
+            ngx_del_timer(event);
+        }
         if (peer->probe != NULL) {
             ngx_healthcheck_probe_cleanup(peer->probe, 0);
         }
+        break;
+    case NGX_AGAIN:
+        ngx_healthcheck_timer(event, wait != 0 ? wait : NGX_HEALTHCHECK_CLAIM_RETRY_MS);
+        break;
+    default:
+        ngx_healthcheck_timer(event, peer->conf->check_interval);
+        break;
     }
 }
 
@@ -735,7 +770,7 @@ ngx_healthcheck_watch(ngx_event_t *event)
             && (now / 1000000 >= ngx_healthcheck_add_time(eligible, runtime->preference)
                 || ngx_healthcheck_preferred(peer, &state, now / 1000000, limit)))
         {
-            (void) ngx_healthcheck_claim(peer, 1, &state, limit);
+            (void) ngx_healthcheck_claim(peer, 1, &state, limit, NULL);
         }
 next:
         if (ngx_healthcheck_now(&now) != NGX_OK || now >= limit) {

@@ -10,7 +10,6 @@
 /* 检查类型沿用既有共享身份编码。 */
 #define NGX_CHECK_TYPE_TCP  0x0001
 #define NGX_CHECK_TYPE_UDP  0x0004
-#define NGX_CHECK_KEEPALIVE_REQUESTS_DEFAULT  10
 
 typedef struct ngx_upstream_check_peer_s ngx_upstream_check_peer_t;
 typedef struct ngx_upstream_check_peers_s ngx_upstream_check_peers_t;
@@ -24,18 +23,28 @@ typedef struct {
     ngx_str_t   default_send;
 } ngx_check_conf_t;
 
-/* 每个 upstream 的检查参数，配置完成后由所属 cycle 持有。 */
+/*
+ * 每个 upstream 的检查参数，配置完成后由所属 cycle 持有。
+ * check_interval 为相邻两轮探测开始时刻的间隔；为 0 表示该 upstream 未配置检查。
+ */
 typedef struct ngx_upstream_check_srv_conf_s {
     ngx_uint_t        port;
     ngx_uint_t        fall_count;
     ngx_uint_t        rise_count;
     ngx_msec_t        check_interval;
     ngx_msec_t        check_timeout;
-    ngx_uint_t        check_keepalive_requests;
     ngx_check_conf_t *check_type_conf;
     ngx_str_t         send;
     ngx_uint_t        default_down;
-    ngx_flag_t        tcp_reuse;
+    /* reuse 或 keepalive 启用时，TCP 检查连接在轮次之间保留。 */
+    ngx_flag_t        keep_connection;
+    /* 保留连接的存活上限，达到后下一轮重新握手；0 表示仅在连接断开后重连。 */
+    ngx_msec_t        rehandshake;
+    /* 保留连接由内核 keepalive 探测对端，三项以秒/次数显式设置到 socket。 */
+    ngx_flag_t        keepalive;
+    ngx_uint_t        keepalive_idle;
+    ngx_uint_t        keepalive_interval;
+    ngx_uint_t        keepalive_count;
 } ngx_upstream_check_srv_conf_t;
 
 /* 后端配置及本进程调度入口；单轮 I/O 数据按实际执行职责延迟分配。 */

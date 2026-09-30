@@ -28,8 +28,6 @@ static ngx_int_t ngx_http_upstream_check_status_handler(ngx_http_request_t *r);
 static ngx_command_t ngx_http_upstream_check_commands[] = {
     { ngx_string("check"), NGX_HTTP_UPS_CONF|NGX_CONF_1MORE,
       ngx_healthcheck_check, NGX_HTTP_SRV_CONF_OFFSET, 0, NULL },
-    { ngx_string("check_keepalive_requests"), NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
-      ngx_healthcheck_keepalive, NGX_HTTP_SRV_CONF_OFFSET, 0, NULL },
     { ngx_string("check_shm_size"), NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_healthcheck_shm_size, NGX_HTTP_MAIN_CONF_OFFSET, 0, NULL },
     { ngx_string("check_status"),

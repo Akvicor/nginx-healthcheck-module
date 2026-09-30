@@ -145,7 +145,10 @@ ngx_healthcheck_init_zone(ngx_shm_zone_t *zone, void *data)
             state.health.delay_total = 0;
             state.health.delay_sample_count = 0;
         }
-        /* 只继承健康值，新 cycle 重新建立全部运行资格和首次启动期限。 */
+        /*
+         * 继承健康值与最近一轮开始时刻（保持探测节奏），新 cycle 重新建立全部运行
+         * 资格和首次启动期限。
+         */
         state.owner = NGX_INVALID_PID;
         state.worker = i % peers->workers;
         state.instance = 0;
